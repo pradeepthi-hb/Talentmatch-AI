@@ -1,22 +1,45 @@
+/**
+ * pages/analyzerPage.jsx
+ *
+ * New features vs previous version:
+ *  - Multi-candidate panel (add / remove / switch)
+ *  - JD file upload (PDF/DOCX/TXT)
+ *  - Elapsed timer during analysis
+ *  - Hiring Verdict card (Proceed / Maybe / Reject + reason)
+ *  - Match Breakdown chart (recharts, lazy-loaded)
+ *  - Comparison tab (side-by-side all analyzed candidates)
+ *  - Download single report — uses candidate name from resume text
+ *  - Download ALL reports button — one PDF per analyzed candidate
+ *
+ * Bundle optimisations preserved:
+ *  - pdfjs / mammoth → dynamic import via fileParser.js
+ *  - react-markdown / motion / recharts → React.lazy() + Suspense
+ *  - clsx + tailwind-merge → inline cn()
+ */
+
 import { useState, useRef, lazy, Suspense } from "react";
-import { downloadReport , downloadComparisonReport} from "../services/reportService.js";
+import { downloadReport, downloadComparisonReport } from "../services/reportService.js";
+import { createAnalysis } from "../services/analysisService.js";
 import {
   FileText, User, CheckCircle2, XCircle, AlertCircle, BarChart3,
   Loader2, Sparkles, ArrowRight, ClipboardList, Upload, FileUp,
   X, Download, MessageSquare, Star, Plus, Trash2, Briefcase,
-  Award, LogOut, ChevronDown, Users, Timer,
+  Award, LogOut, ChevronDown, Users, Timer, PanelLeft, RefreshCw,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext.jsx";
 import { extractTextFromFile } from "../utils/fileParser.js";
 import { extractCandidateName } from "../utils/resumeParser.js";
-import { useCandidates } from "../hooks/useCandidates.js";
+import { useAnalysisSession } from "../hooks/useAnalysisSession.js";
+import { useGlobalQuestions } from "../hooks/useGlobalquestions.js";
 
-// Lazy
+// ── Lazy heavy components ─────────────────────────────────────────────────────
 const MotionDiv           = lazy(() => import("motion/react").then((m) => ({ default: m.motion.div })));
 const AnimatePresenceComp = lazy(() => import("motion/react").then((m) => ({ default: m.AnimatePresence })));
 const Markdown            = lazy(() => import("react-markdown"));
 const MatchBreakdownChart = lazy(() => import("../components/MatchBreakdownChart.jsx"));
 const ComparisonTab       = lazy(() => import("../components/ComparisonTab.jsx"));
+const QuestionBank        = lazy(() => import("../components/QuestionBank.jsx"));
+const AnalysisSidebar     = lazy(() => import("../components/AnalysisSidebar.jsx"));
 
 function cn(...classes) { return classes.filter(Boolean).join(" "); }
 
@@ -28,7 +51,7 @@ function SpinnerFallback() {
   );
 }
 
-// Sample data 
+// ── Sample data ───────────────────────────────────────────────────────────────
 const SAMPLE_JD = `Senior Frontend Engineer
 Role Overview:
 We are looking for a Senior Frontend Engineer with 5+ years of experience in React and TypeScript. You will be responsible for building highly interactive user interfaces and leading architectural decisions for our core product.
@@ -61,12 +84,11 @@ Skills:
 React, TypeScript, JavaScript (ES6+), Tailwind CSS, Redux, Jest, Git, Webpack.
 `;
 
-// ───────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 export default function AnalyzerPage() {
   const { user, logout } = useAuth();
   const [showUserMenu, setShowUserMenu] = useState(false);
 
-  const [jd, setJd] = useState("");
   const [jdFileName, setJdFileName] = useState(null);
   const [isExtractingJd, setIsExtractingJd] = useState(false);
   const [isExtractingResume, setIsExtractingResume] = useState(false);
@@ -78,21 +100,58 @@ export default function AnalyzerPage() {
   const fileInputRef   = useRef(null);
   const jdFileInputRef = useRef(null);
 
+  // ── Sidebar state ───────────────────────────────────────────────────────────
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // ── Persisted analysis session ───────────────────────────────────────────
   const {
-    candidates, selectedCandidateId, selectedCandidate,
-    elapsedTime, error, setError, setSelectedCandidateId,
-    addNewCandidate, removeCandidate, updateCandidateResume,
-    handleAnalyze, addQuestion, updateQuestion, removeQuestion,
-    clearResume, loadSamples,
-  } = useCandidates(jd);
+    analysisId,
+    jd, setJd,
+    jdSaving, jdOutdated,
+    candidates,
+    selectedId:        selectedCandidateId,
+    selectedCandidate,
+    setSelectedId:     setSelectedCandidateId,
+    loading:           sessionLoading,
+    error,             setError,
+    elapsedTime,
+    isAnalyzing,
+    hasAnyResult,
+    openAnalysis,
+    handleResumeUpload,
+    handleTextResume,
+    removeCandidateById,
+    handleAnalyze:     analyzeSelected,
+    addInterviewQuestion,
+    updateInterviewQuestion,
+    removeInterviewQuestion,
+  } = useAnalysisSession();
+
+  // ── Global question bank ─────────────────────────────────────────────────
+  const {
+    questionBank,
+    addBankQuestion,
+    removeBankQuestion,
+    toggleApply,
+    updateBankQuestion,
+    toInterviewQuestions,
+    activeGlobalQuestions,
+  } = useGlobalQuestions();
+
+  // Wrapper: run analysis injecting active global questions
+  const handleAnalyze = (candidateId) =>
+    analyzeSelected(candidateId, activeGlobalQuestions);
 
   const resume             = selectedCandidate?.resume ?? "";
   const fileName           = selectedCandidate?.fileName ?? null;
   const result             = selectedCandidate?.result ?? null;
-  const isAnalyzing        = selectedCandidate?.isAnalyzing ?? false;
   const interviewQuestions = selectedCandidate?.interviewQuestions ?? [];
-  const hasAnyResult       = candidates.some((c) => c.result !== null);
   const analyzedCount      = candidates.filter((c) => c.result).length;
+
+  // Removing a candidate clears their resume from the panel
+  const clearResume = () => {
+    if (selectedCandidate) removeCandidateById(selectedCandidate.id);
+  };
 
   const ratedQs = interviewQuestions.filter((q) => q.rating > 0);
   const avgRating = ratedQs.length > 0
@@ -103,7 +162,7 @@ export default function AnalyzerPage() {
     ? user.name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2)
     : "?";
 
-  // JD upload
+  // ── JD upload ──────────────────────────────────────────────────────────────
   const handleJdUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -113,7 +172,7 @@ export default function AnalyzerPage() {
     try {
       const text = await extractTextFromFile(file);
       if (!text.trim()) throw new Error("Could not extract text from the JD file.");
-      setJd(text);
+      setJd(text); // triggers debounced autosave to backend
     } catch (err) {
       setError(err.message || "Failed to read JD file.");
       setJdFileName(null);
@@ -123,21 +182,25 @@ export default function AnalyzerPage() {
     }
   };
 
-  // Resume upload
-  const handleResumeUpload = async (e) => {
+  // ── Resume upload ──────────────────────────────────────────────────────────
+  const handleUploadResume = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (!analysisId) {
+      // Auto-create an analysis if none is open
+      setError(null);
+      try {
+        const data = await createAnalysis(jd);
+        await openAnalysis(data.analysis);
+      } catch (err) {
+        setError("Failed to create analysis session.");
+        return;
+      }
+    }
     setIsExtractingResume(true);
     setError(null);
     try {
-      const text = await extractTextFromFile(file);
-      if (!text.trim()) throw new Error("Could not extract text from the file.");
-      if (selectedCandidateId) {
-        updateCandidateResume(selectedCandidateId, text, file, file.name);
-      } else {
-        addNewCandidate();
-        setTimeout(() => updateCandidateResume(selectedCandidateId, text, file, file.name), 0);
-      }
+      await handleResumeUpload(file);
     } catch (err) {
       setError(err.message || "Failed to read resume file.");
     } finally {
@@ -146,7 +209,7 @@ export default function AnalyzerPage() {
     }
   };
 
-  // Download single
+  // ── Download single ────────────────────────────────────────────────────────
   const handleDownloadReport = async () => {
     if (!result || !selectedCandidate) return;
     setIsDownloading(true);
@@ -155,7 +218,7 @@ export default function AnalyzerPage() {
       const fileToSend = selectedCandidate.resumeFile
         ? selectedCandidate.resumeFile
         : new File([resume], "resume.txt", { type: "text/plain" });
-      const candidateName = extractCandidateName(resume, selectedCandidate.name);
+      const candidateName = selectedCandidate.name || "Candidate";
       const jobTitle = jd.split("\n").find((l) => l.trim())?.trim() ?? "";
       await downloadReport(result, interviewQuestions, fileToSend, candidateName, jobTitle);
     } catch (err) {
@@ -165,12 +228,7 @@ export default function AnalyzerPage() {
     }
   };
 
-  const handleDownloadComparison = async () => {
-    const jobTitle = jd.split("\n").find((l) => l.trim())?.trim() ?? "";
-    await downloadComparisonReport(candidates, jobTitle);
-  };
-
-  // Download ALL
+  // ── Download ALL ───────────────────────────────────────────────────────────
   const handleDownloadAllReports = async () => {
     const analyzed = candidates.filter((c) => c.result);
     if (!analyzed.length) return;
@@ -182,14 +240,20 @@ export default function AnalyzerPage() {
         const fileToSend = c.resumeFile
           ? c.resumeFile
           : new File([c.resume], "resume.txt", { type: "text/plain" });
-        const candidateName = extractCandidateName(c.resume, c.name);
+        const candidateName = c.name || "Candidate";
         await downloadReport(c.result, c.interviewQuestions, fileToSend, candidateName, jobTitle);
-        await new Promise((r) => setTimeout(r, 600));
+        await new Promise((r) => setTimeout(r, 600)); // stagger downloads
       } catch (err) {
         console.error(`Report failed for ${c.name}:`, err.message);
       }
     }
     setIsDownloadingAll(false);
+  };
+
+  // ── Download comparison PDF ────────────────────────────────────────────────
+  const handleDownloadComparison = async () => {
+    const jobTitle = jd.split("\n").find((l) => l.trim())?.trim() ?? "";
+    await downloadComparisonReport(candidates, jobTitle);
   };
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -199,7 +263,21 @@ export default function AnalyzerPage() {
         <div className="w-10 h-10 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin" />
       </div>
     }>
-    <div className="min-h-screen bg-[#F3F4F6] text-slate-900 font-sans selection:bg-indigo-100">
+    <>
+    <Suspense fallback={null}>
+      <AnalysisSidebar
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        currentAnalysisId={analysisId}
+        onSelectAnalysis={(id) => { openAnalysis({ id }); setSidebarOpen(false); }}
+        onNewAnalysis={(analysis) => { openAnalysis(analysis); setSidebarOpen(false); }}
+      />
+    </Suspense>
+
+    <div className={cn(
+      "min-h-screen bg-[#F3F4F6] text-slate-900 font-sans selection:bg-indigo-100 transition-all duration-300",
+      sidebarOpen ? "lg:pl-72" : ""
+    )}>
 
       {/* ── Header ── */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
@@ -215,14 +293,17 @@ export default function AnalyzerPage() {
           </div>
 
           <div className="flex items-center gap-3">
+            {/* Sidebar toggle */}
             <button
-              onClick={() => loadSamples(setJd, SAMPLE_JD, SAMPLE_RESUME)}
-              className="hidden sm:flex text-sm font-semibold text-slate-500 hover:text-indigo-600 transition-all items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-50"
+              onClick={() => setSidebarOpen(true)}
+              className="flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-indigo-600 transition-all px-3 py-2 rounded-lg hover:bg-slate-50"
+              title="Open analysis history"
             >
-              <ClipboardList className="w-4 h-4" /> Demo Data
+              <PanelLeft className="w-4 h-4" />
+              <span className="hidden sm:inline">History</span>
             </button>
 
-            {/* Download ALL  */}
+            {/* Download ALL — visible when 2+ candidates analyzed */}
             {analyzedCount > 1 && (
               <button
                 onClick={handleDownloadAllReports}
@@ -315,9 +396,11 @@ export default function AnalyzerPage() {
                 <div className="flex items-center gap-2">
                   <div className="p-1.5 bg-indigo-100 rounded-md text-indigo-600"><Briefcase className="w-4 h-4" /></div>
                   <h2 className="text-xs font-bold uppercase tracking-widest text-slate-500">Job Specification</h2>
+                  {jdSaving && <Loader2 className="w-3 h-3 text-slate-400 animate-spin" title="Saving..." />}
+                  {!jdSaving && analysisId && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" title="Saved" />}
                 </div>
                 <div className="flex items-center gap-2">
-                  <input name="job description" type="file" ref={jdFileInputRef} onChange={handleJdUpload} accept=".pdf,.docx,.txt" className="hidden" />
+                  <input type="file" ref={jdFileInputRef} onChange={handleJdUpload} accept=".pdf,.docx,.txt" className="hidden" />
                   <button
                     onClick={() => jdFileInputRef.current?.click()}
                     disabled={isExtractingJd}
@@ -357,7 +440,7 @@ export default function AnalyzerPage() {
                   </h2>
                 </div>
                 <button
-                  onClick={addNewCandidate}
+                  onClick={() => fileInputRef.current?.click()}
                   className="text-xs font-bold text-indigo-600 hover:text-indigo-700 flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 rounded-lg transition-all hover:bg-indigo-100"
                 >
                   <Plus className="w-3.5 h-3.5" /> Add New
@@ -401,7 +484,7 @@ export default function AnalyzerPage() {
                           </div>
                         </div>
                         <button
-                          onClick={(e) => { e.stopPropagation(); removeCandidate(c.id); }}
+                          onClick={(e) => { e.stopPropagation(); removeCandidateById(c.id); }}
                           className="p-1.5 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"
                         >
                           <X className="w-3.5 h-3.5" />
@@ -421,7 +504,7 @@ export default function AnalyzerPage() {
                   <h2 className="text-xs font-bold uppercase tracking-widest text-slate-500">Candidate Profile</h2>
                 </div>
                 <div className="flex items-center gap-2">
-                  <input name="resume file" type="file" ref={fileInputRef} onChange={handleResumeUpload} accept=".pdf,.docx,.txt" className="hidden" />
+                  <input type="file" ref={fileInputRef} onChange={handleUploadResume} accept=".pdf,.docx,.txt" className="hidden" />
                   <button
                     onClick={() => fileInputRef.current?.click()}
                     disabled={isExtractingResume}
@@ -443,13 +526,25 @@ export default function AnalyzerPage() {
                   </div>
                 )}
                 <textarea
-                  value={resume}
-                  onChange={(e) => selectedCandidateId && updateCandidateResume(selectedCandidateId, e.target.value, null, fileName)}
-                  placeholder="Paste resume text or upload a document..."
-                  className="w-full h-64 p-5 focus:outline-none resize-none text-slate-700 leading-relaxed text-sm placeholder:text-slate-300"
+                  value={selectedCandidate?.resumeText || ""}
+                  readOnly
+                  placeholder="Upload a resume to populate this field..."
+                  className="w-full h-64 p-5 focus:outline-none resize-none text-slate-700 leading-relaxed text-sm placeholder:text-slate-300 bg-slate-50/50"
                 />
               </div>
             </div>
+
+            {/* Question Bank */}
+            <Suspense fallback={null}>
+              <QuestionBank
+                questionBank={questionBank}
+                onAdd={addBankQuestion}
+                onRemove={removeBankQuestion}
+                onToggle={toggleApply}
+                onUpdate={updateBankQuestion}
+              />
+            </Suspense>
+
 
             {/* Analyze button */}
             <button
@@ -719,8 +814,7 @@ export default function AnalyzerPage() {
                 {activeTab === "comparison" && (
                   <MotionDiv key="comparison-tab" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
                     <Suspense fallback={<SpinnerFallback />}>
-                      <ComparisonTab candidates={candidates}
-                                     onDownloadComparison={handleDownloadComparison} />
+                      <ComparisonTab candidates={candidates} onDownloadComparison={handleDownloadComparison} />
                     </Suspense>
                   </MotionDiv>
                 )}
@@ -748,18 +842,25 @@ export default function AnalyzerPage() {
                       <div className="space-y-6">
                         {interviewQuestions.map((q) => (
                           <div key={q.id} className="p-6 bg-slate-50 rounded-2xl border border-slate-100 group relative">
-                            <button onClick={() => removeQuestion(q.id)}
+                            <button onClick={() => removeInterviewQuestion(q.id)}
                               className="absolute top-4 right-4 p-1.5 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all">
                               <Trash2 className="w-4 h-4" />
                             </button>
                             <div className="space-y-4">
                               <div>
-                                <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 block mb-2">Question</label>
+                                <div className="flex items-center gap-2 mb-2">
+                                  <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Question</label>
+                                  {q.isGlobal && (
+                                    <span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-violet-100 text-violet-600 uppercase tracking-widest">
+                                      Bank
+                                    </span>
+                                  )}
+                                </div>
                                 <p className="text-sm font-bold text-slate-800">{q.question}</p>
                               </div>
                               <div>
                                 <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 block mb-2">Candidate Answer</label>
-                                <textarea value={q.answer} onChange={(e) => updateQuestion(q.id, { answer: e.target.value })}
+                                <textarea value={q.answer} onChange={(e) => updateInterviewQuestion(q.id, { answer: e.target.value })}
                                   placeholder="Record candidate's response..."
                                   className="w-full p-4 bg-white border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none min-h-[100px] resize-none"
                                 />
@@ -769,7 +870,7 @@ export default function AnalyzerPage() {
                                 <div className="flex gap-1">
                                   {[1, 2, 3, 4, 5].map((star) => (
                                     <button key={star}
-                                      onClick={() => updateQuestion(q.id, { rating: q.rating === star ? 0 : star })}
+                                      onClick={() => updateInterviewQuestion(q.id, { rating: q.rating === star ? 0 : star })}
                                       className={cn("p-1 transition-all hover:scale-125 active:scale-90",
                                         q.rating >= star ? "text-amber-400" : "text-slate-200 hover:text-amber-200")}>
                                       <Star className={cn("w-6 h-6", q.rating >= star ? "fill-current" : "")} />
@@ -785,11 +886,11 @@ export default function AnalyzerPage() {
                           <div className="flex gap-3">
                             <input type="text" value={newQuestion}
                               onChange={(e) => setNewQuestion(e.target.value)}
-                              onKeyPress={(e) => { if (e.key === "Enter") { addQuestion(newQuestion); setNewQuestion(""); } }}
+                              onKeyPress={(e) => { if (e.key === "Enter") { addInterviewQuestion(newQuestion); setNewQuestion(""); } }}
                               placeholder="Add a custom interview question..."
                               className="flex-1 p-4 bg-white border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
                             />
-                            <button onClick={() => { addQuestion(newQuestion); setNewQuestion(""); }}
+                            <button onClick={() => { addInterviewQuestion(newQuestion); setNewQuestion(""); }}
                               className="p-4 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 active:scale-95">
                               <Plus className="w-5 h-5" />
                             </button>
@@ -818,6 +919,7 @@ export default function AnalyzerPage() {
         </div>
       </footer>
     </div>
+    </>
     </Suspense>
   );
 }
