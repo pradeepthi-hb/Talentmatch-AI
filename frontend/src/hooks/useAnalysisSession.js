@@ -185,19 +185,22 @@ export function useAnalysisSession() {
   }, [selectedId]);
 
   // ── Interview question mutations (autosave answer/rating) ─────────────────
-  const addInterviewQuestion = useCallback(async (text, category = "Custom", isGlobal = false) => {
-    if (!analysisRef.current || !selectedId) return;
+  const addInterviewQuestion = useCallback(async (text, category = "Custom", isGlobal = false, candidateIdOverride = null) => {
+    const candidateId = candidateIdOverride ?? selectedId;
+    if (!analysisRef.current || !candidateId || !text?.trim()) return null;
     try {
-      const data = await addQuestion(analysisRef.current, selectedId, text, category, isGlobal);
+      const data = await addQuestion(analysisRef.current, candidateId, text, category, isGlobal);
       setCandidates((prev) =>
         prev.map((c) =>
-          c.id === selectedId
+          c.id === candidateId
             ? { ...c, interviewQuestions: [...(c.interviewQuestions || []), data.question] }
             : c
         )
       );
+      return data.question;
     } catch (e) {
       setError(e.message);
+      return null;
     }
   }, [selectedId]);
 
@@ -210,12 +213,13 @@ export function useAnalysisSession() {
     []
   );
 
-  const updateInterviewQuestion = useCallback((questionId, updates) => {
-    if (!selectedId) return;
+  const updateInterviewQuestion = useCallback((questionId, updates, candidateIdOverride = null) => {
+    const candidateId = candidateIdOverride ?? selectedId;
+    if (!candidateId) return;
     // Optimistic update
     setCandidates((prev) =>
       prev.map((c) =>
-        c.id === selectedId
+        c.id === candidateId
           ? {
               ...c,
               interviewQuestions: c.interviewQuestions.map((q) =>
@@ -227,17 +231,18 @@ export function useAnalysisSession() {
     );
     // Persist after debounce
     if (analysisRef.current) {
-      autosaveQuestion(analysisRef.current, selectedId, questionId, updates);
+      autosaveQuestion(analysisRef.current, candidateId, questionId, updates);
     }
   }, [selectedId, autosaveQuestion]);
 
-  const removeInterviewQuestion = useCallback(async (questionId) => {
-    if (!analysisRef.current || !selectedId) return;
+  const removeInterviewQuestion = useCallback(async (questionId, candidateIdOverride = null) => {
+    const candidateId = candidateIdOverride ?? selectedId;
+    if (!analysisRef.current || !candidateId) return;
     try {
-      await deleteQuestion(analysisRef.current, selectedId, questionId);
+      await deleteQuestion(analysisRef.current, candidateId, questionId);
       setCandidates((prev) =>
         prev.map((c) =>
-          c.id === selectedId
+          c.id === candidateId
             ? { ...c, interviewQuestions: c.interviewQuestions.filter((q) => q.id !== questionId) }
             : c
         )

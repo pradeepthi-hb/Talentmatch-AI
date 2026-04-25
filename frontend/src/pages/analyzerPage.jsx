@@ -1,5 +1,5 @@
-import { useState, useRef, lazy, Suspense } from "react";
-import { downloadReport, downloadComparisonReport } from "../services/reportService.js";
+import { useEffect, useState, useRef, lazy, Suspense } from "react";
+import { downloadReport, downloadComparisonReport, resolveCandidateResumeFile } from "../services/reportService.js";
 import { createAnalysis } from "../services/analysisService.js";
 import {
   FileText, User, CheckCircle2, XCircle, AlertCircle, BarChart3,
@@ -79,6 +79,7 @@ export default function AnalyzerPage() {
 
   const fileInputRef   = useRef(null);
   const jdFileInputRef = useRef(null);
+  const questionSyncRef = useRef("");
 
   // ── Sidebar state ───────────────────────────────────────────────────────────
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -107,20 +108,160 @@ export default function AnalyzerPage() {
     removeInterviewQuestion,
   } = useAnalysisSession();
 
+  const analysisStorageKey = user?.id ? `tm_active_analysis_${user.id}` : null;
+  const questionBankStorageKey = user?.id
+    ? `tm_question_bank_${user.id}_${analysisId || "draft"}`
+    : null;
+
   // ── Global question bank ─────────────────────────────────────────────────
   const {
     questionBank,
+    questionBankReady,
     addBankQuestion,
     removeBankQuestion,
     toggleApply,
     updateBankQuestion,
     toInterviewQuestions,
     activeGlobalQuestions,
-  } = useGlobalQuestions();
+  } = useGlobalQuestions(questionBankStorageKey);
+
+  useEffect(() => {
+    if (!analysisStorageKey) return;
+
+    if (analysisId) {
+      localStorage.setItem(analysisStorageKey, String(analysisId));
+      return;
+    }
+
+    localStorage.removeItem(analysisStorageKey);
+  }, [analysisId, analysisStorageKey]);
+
+  useEffect(() => {
+    if (!analysisStorageKey || analysisId || sessionLoading) return;
+
+    const savedAnalysisId = localStorage.getItem(analysisStorageKey);
+    if (savedAnalysisId) {
+      openAnalysis({ id: savedAnalysisId });
+    }
+  }, [analysisId, analysisStorageKey, openAnalysis, sessionLoading]);
+
+  useEffect(() => {
+    if (!analysisId) {
+      questionSyncRef.current = "";
+    }
+  }, [analysisId]);
 
   // Wrapper: run analysis injecting active global questions
   const handleAnalyze = (candidateId) =>
     analyzeSelected(candidateId, activeGlobalQuestions);
+
+  const makeGlobalQuestionLabel = (question) => `[${question.category}] ${question.text}`;
+
+  const syncBankQuestionAcrossAnalyzedCandidates = async (question, enabled) => {
+    const analyzedCandidates = candidates.filter((candidate) => candidate.result);
+
+    await Promise.all(
+      analyzedCandidates.map(async (candidate) => {
+        const label = makeGlobalQuestionLabel(question);
+        const matches = (candidate.interviewQuestions || []).filter(
+          (entry) => entry.isGlobal && entry.question === label
+        );
+
+        if (enabled) {
+          if (!matches.length) {
+            await addInterviewQuestion(question.text, question.category, true, candidate.id);
+          }
+          return;
+        }
+
+        await Promise.all(matches.map((entry) => removeInterviewQuestion(entry.id, candidate.id)));
+      })
+    );
+  };
+
+  const handleAddBankQuestion = async (text, category = "Custom") => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    addBankQuestion(trimmed, category);
+    await syncBankQuestionAcrossAnalyzedCandidates({ text: trimmed, category }, true);
+  };
+
+  const handleRemoveBankQuestion = async (id) => {
+    const question = questionBank.find((entry) => entry.id === id);
+    removeBankQuestion(id);
+    if (question) {
+      await syncBankQuestionAcrossAnalyzedCandidates(question, false);
+    }
+  };
+
+  const handleToggleBankQuestion = async (id) => {
+    const question = questionBank.find((entry) => entry.id === id);
+    toggleApply(id);
+    if (question) {
+      await syncBankQuestionAcrossAnalyzedCandidates(question, !question.apply);
+    }
+  };
+
+  const handleUpdateBankQuestion = async (id, updates) => {
+    const previousQuestion = questionBank.find((entry) => entry.id === id);
+    updateBankQuestion(id, updates);
+    if (!previousQuestion) return;
+
+    const nextQuestion = { ...previousQuestion, ...updates };
+    await syncBankQuestionAcrossAnalyzedCandidates(previousQuestion, false);
+    if (nextQuestion.apply) {
+      await syncBankQuestionAcrossAnalyzedCandidates(nextQuestion, true);
+    }
+  };
+
+  useEffect(() => {
+    if (!analysisId || sessionLoading || !questionBankReady || !candidates.length) return;
+
+    const syncKey = [
+      analysisId,
+      questionBankStorageKey,
+      questionBank
+        .map((question) => `${question.id}:${question.category}:${question.text}:${question.apply ? 1 : 0}`)
+        .join("|"),
+    ].join("::");
+
+    if (questionSyncRef.current === syncKey) return;
+    questionSyncRef.current = syncKey;
+
+    const activeLabels = new Set(activeGlobalQuestions.map(makeGlobalQuestionLabel));
+    const analyzedCandidates = candidates.filter((candidate) => candidate.result);
+
+    const reconcile = async () => {
+      await Promise.all(
+        analyzedCandidates.map(async (candidate) => {
+          const globalEntries = (candidate.interviewQuestions || []).filter((entry) => entry.isGlobal);
+          const staleEntries = globalEntries.filter((entry) => !activeLabels.has(entry.question));
+
+          await Promise.all(staleEntries.map((entry) => removeInterviewQuestion(entry.id, candidate.id)));
+
+          await Promise.all(
+            activeGlobalQuestions.map(async (question) => {
+              const label = makeGlobalQuestionLabel(question);
+              const exists = globalEntries.some((entry) => entry.question === label);
+              if (!exists) {
+                await addInterviewQuestion(question.text, question.category, true, candidate.id);
+              }
+            })
+          );
+        })
+      );
+    };
+
+    reconcile();
+  }, [
+    analysisId,
+    sessionLoading,
+    questionBankReady,
+    questionBankStorageKey,
+    questionBank,
+    addInterviewQuestion,
+    removeInterviewQuestion,
+  ]);
 
   const resumeText         = selectedCandidate?.resumeText ?? "";
   const fileName           = selectedCandidate?.fileName ?? null;
@@ -201,9 +342,7 @@ export default function AnalyzerPage() {
     setIsDownloading(true);
     setError(null);
     try {
-      const fileToSend = selectedCandidate.resumeFile
-        ? selectedCandidate.resumeFile
-        : new File([resumeText], "resume.txt", { type: "text/plain" });
+      const fileToSend = await resolveCandidateResumeFile(selectedCandidate);
       const candidateName = selectedCandidate.name || "Candidate";
       const jobTitle = jd.split("\n").find((l) => l.trim())?.trim() ?? "";
       await downloadReport(result, interviewQuestions, fileToSend, candidateName, jobTitle);
@@ -223,9 +362,7 @@ export default function AnalyzerPage() {
     const jobTitle = jd.split("\n").find((l) => l.trim())?.trim() ?? "";
     for (const c of analyzed) {
       try {
-        const fileToSend = c.resumeFile
-          ? c.resumeFile
-          : new File([c.resumeText ?? ""], "resume.txt", { type: "text/plain" });
+        const fileToSend = await resolveCandidateResumeFile(c);
         const candidateName = c.name || "Candidate";
         await downloadReport(c.result, c.interviewQuestions, fileToSend, candidateName, jobTitle);
         await new Promise((r) => setTimeout(r, 600)); // stagger downloads
@@ -546,10 +683,10 @@ export default function AnalyzerPage() {
             <Suspense fallback={null}>
               <QuestionBank
                 questionBank={questionBank}
-                onAdd={addBankQuestion}
-                onRemove={removeBankQuestion}
-                onToggle={toggleApply}
-                onUpdate={updateBankQuestion}
+                onAdd={handleAddBankQuestion}
+                onRemove={handleRemoveBankQuestion}
+                onToggle={handleToggleBankQuestion}
+                onUpdate={handleUpdateBankQuestion}
               />
             </Suspense>
 

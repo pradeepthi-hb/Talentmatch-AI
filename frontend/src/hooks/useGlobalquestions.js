@@ -1,11 +1,42 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 function makeId() {
   return Math.random().toString(36).substr(2, 9);
 }
 
-export function useGlobalQuestions() {
+export function useGlobalQuestions(storageKey) {
   const [questionBank, setQuestionBank] = useState([]);
+  const [questionBankReady, setQuestionBankReady] = useState(false);
+
+  useEffect(() => {
+    setQuestionBankReady(false);
+
+    if (!storageKey) {
+      setQuestionBank([]);
+      setQuestionBankReady(true);
+      return;
+    }
+
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) {
+      setQuestionBank([]);
+      setQuestionBankReady(true);
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(raw);
+      setQuestionBank(Array.isArray(parsed) ? parsed : []);
+    } catch {
+      setQuestionBank([]);
+    }
+    setQuestionBankReady(true);
+  }, [storageKey]);
+
+  useEffect(() => {
+    if (!storageKey) return;
+    localStorage.setItem(storageKey, JSON.stringify(questionBank));
+  }, [storageKey, questionBank]);
 
   const addBankQuestion = (text, category = "Custom") => {
     if (!text?.trim()) return;
@@ -44,6 +75,7 @@ export function useGlobalQuestions() {
 
   return {
     questionBank,
+    questionBankReady,
     activeGlobalQuestions,
     addBankQuestion,
     removeBankQuestion,

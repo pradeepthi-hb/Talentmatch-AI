@@ -2,6 +2,43 @@ import { getToken } from "./authService.js";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3002";
 
+function makeAbsoluteResumeUrl(resumePath) {
+  if (!resumePath) return null;
+  if (/^https?:\/\//i.test(resumePath)) return resumePath;
+  const normalized = String(resumePath).replace(/\\/g, "/").replace(/^\/+/, "");
+  return `${API_BASE}/${normalized}`;
+}
+
+export async function resolveCandidateResumeFile(candidate) {
+  if (candidate?.resumeFile instanceof File) {
+    return candidate.resumeFile;
+  }
+
+  if (candidate?.resumePath) {
+    const response = await fetch(makeAbsoluteResumeUrl(candidate.resumePath));
+    if (!response.ok) {
+      throw new Error(`Could not load the stored resume (${response.status}).`);
+    }
+
+    const blob = await response.blob();
+    return new File(
+      [blob],
+      candidate.fileName || "resume.pdf",
+      { type: candidate.mimeType || blob.type || "application/octet-stream" }
+    );
+  }
+
+  if (candidate?.resumeText?.trim()) {
+    return new File(
+      [candidate.resumeText],
+      candidate.fileName || "resume.txt",
+      { type: "text/plain" }
+    );
+  }
+
+  throw new Error("No resume is available for this candidate.");
+}
+
 /**
  * Calls POST /api/report.
  *

@@ -14,6 +14,24 @@ export function removeToken() {
   localStorage.removeItem("tm_token");
 }
 
+export function getStoredUser() {
+  const raw = localStorage.getItem("tm_user");
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+export function setStoredUser(user) {
+  localStorage.setItem("tm_user", JSON.stringify(user));
+}
+
+export function removeStoredUser() {
+  localStorage.removeItem("tm_user");
+}
+
 // ── Request helper ────────────────────────────────────────────────────────────
 
 async function request(path, options = {}) {
@@ -24,7 +42,11 @@ async function request(path, options = {}) {
   const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
   const data = await res.json().catch(() => ({}));
 
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  if (!res.ok) {
+    const error = new Error(data.error || `Request failed (${res.status})`);
+    error.status = res.status;
+    throw error;
+  }
   return data;
 }
 
@@ -36,6 +58,7 @@ export async function register(name, email, password) {
     body: JSON.stringify({ name, email, password }),
   });
   setToken(data.token);
+  setStoredUser(data.user);
   return data;
 }
 
@@ -45,6 +68,7 @@ export async function login(email, password) {
     body: JSON.stringify({ email, password }),
   });
   setToken(data.token);
+  setStoredUser(data.user);
   return data;
 }
 
@@ -54,4 +78,5 @@ export async function getMe() {
 
 export function logout() {
   removeToken();
+  removeStoredUser();
 }

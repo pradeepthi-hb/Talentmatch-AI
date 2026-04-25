@@ -35,7 +35,7 @@ app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
 
 // JSON body parser — skip for multipart routes
 app.use((req, res, next) => {
-  const skip = req.path === "/api/report" || req.path === "/api/comparison";
+  const skip = req.path === "/api/report";
   if (skip) return next();
   express.json({ limit: "4mb" })(req, res, next);
 });

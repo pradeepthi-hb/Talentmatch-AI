@@ -1,5 +1,13 @@
 import { createContext, useContext, useState, useEffect } from "react";
-import { getMe, login as apiLogin, register as apiRegister, logout as apiLogout, getToken } from "../services/authService.js";
+import {
+  getMe,
+  login as apiLogin,
+  register as apiRegister,
+  logout as apiLogout,
+  getToken,
+  getStoredUser,
+  setStoredUser,
+} from "../services/authService.js";
 
 const AuthContext = createContext(null);
 
@@ -13,11 +21,21 @@ export function AuthProvider({ children }) {
         setLoading(false);
         return;
       }
+
+      const cachedUser = getStoredUser();
+      if (cachedUser) {
+        setUser(cachedUser);
+      }
+
       try {
         const data = await getMe();
         setUser(data.user);
-      } catch {
-        apiLogout();
+        setStoredUser(data.user);
+      } catch (error) {
+        if (error?.status === 401) {
+          apiLogout();
+          setUser(null);
+        }
       } finally {
         setLoading(false);
       }
@@ -28,12 +46,14 @@ export function AuthProvider({ children }) {
   async function login(email, password) {
     const data = await apiLogin(email, password);
     setUser(data.user);
+    setStoredUser(data.user);
     return data;
   }
 
   async function register(name, email, password) {
     const data = await apiRegister(name, email, password);
     setUser(data.user);
+    setStoredUser(data.user);
     return data;
   }
 
