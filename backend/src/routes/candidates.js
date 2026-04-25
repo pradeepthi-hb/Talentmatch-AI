@@ -306,6 +306,7 @@ function formatCandidate(c) {
   return {
     id:         c.id,
     name:       c.name,
+    resumeText: c.resume_text || "",   // plain text for display in UI
     fileName:   c.file_name,
     mimeType:   c.mime_type,
     resumePath: c.resume_path,

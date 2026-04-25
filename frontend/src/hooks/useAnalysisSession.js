@@ -1,12 +1,3 @@
-/**
- * hooks/useAnalysisSession.js
- *
- * Manages one open analysis session: JD, candidates, results, questions.
- * All mutations hit the backend immediately — frontend state mirrors DB.
- *
- * Replaces the old in-memory useCandidates hook for the persisted flow.
- */
-
 import { useState, useCallback, useRef } from "react";
 import {
   fetchAnalysis, updateJd, analyzeOne,
@@ -110,6 +101,7 @@ export function useAnalysisSession() {
       const data = await addCandidate(analysisRef.current, file, text);
       setCandidates((prev) => [...prev, {
         ...data.candidate,
+        resumeText: text,          // keep extracted text for immediate display
         result: null,
         interviewQuestions: [],
         isOutdated: false,
@@ -127,6 +119,7 @@ export function useAnalysisSession() {
       const data = await addCandidate(analysisRef.current, null, text);
       setCandidates((prev) => [...prev, {
         ...data.candidate,
+        resumeText: text,
         result: null,
         interviewQuestions: [],
         isOutdated: false,

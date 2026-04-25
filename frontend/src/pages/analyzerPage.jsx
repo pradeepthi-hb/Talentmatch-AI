@@ -1,22 +1,3 @@
-/**
- * pages/analyzerPage.jsx
- *
- * New features vs previous version:
- *  - Multi-candidate panel (add / remove / switch)
- *  - JD file upload (PDF/DOCX/TXT)
- *  - Elapsed timer during analysis
- *  - Hiring Verdict card (Proceed / Maybe / Reject + reason)
- *  - Match Breakdown chart (recharts, lazy-loaded)
- *  - Comparison tab (side-by-side all analyzed candidates)
- *  - Download single report — uses candidate name from resume text
- *  - Download ALL reports button — one PDF per analyzed candidate
- *
- * Bundle optimisations preserved:
- *  - pdfjs / mammoth → dynamic import via fileParser.js
- *  - react-markdown / motion / recharts → React.lazy() + Suspense
- *  - clsx + tailwind-merge → inline cn()
- */
-
 import { useState, useRef, lazy, Suspense } from "react";
 import { downloadReport, downloadComparisonReport } from "../services/reportService.js";
 import { createAnalysis } from "../services/analysisService.js";
@@ -28,7 +9,6 @@ import {
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext.jsx";
 import { extractTextFromFile } from "../utils/fileParser.js";
-import { extractCandidateName } from "../utils/resumeParser.js";
 import { useAnalysisSession } from "../hooks/useAnalysisSession.js";
 import { useGlobalQuestions } from "../hooks/useGlobalquestions.js";
 
@@ -142,16 +122,22 @@ export default function AnalyzerPage() {
   const handleAnalyze = (candidateId) =>
     analyzeSelected(candidateId, activeGlobalQuestions);
 
-  const resume             = selectedCandidate?.resume ?? "";
+  const resumeText         = selectedCandidate?.resumeText ?? "";
   const fileName           = selectedCandidate?.fileName ?? null;
   const result             = selectedCandidate?.result ?? null;
   const interviewQuestions = selectedCandidate?.interviewQuestions ?? [];
   const analyzedCount      = candidates.filter((c) => c.result).length;
+  const selectedCandidateName = selectedCandidate?.name ?? "No candidate selected";
+  const selectedCandidateStatus = selectedCandidate?.result
+    ? `${selectedCandidate.result.matchScore}% match`
+    : selectedCandidate?.isOutdated
+    ? "Needs re-analysis"
+    : selectedCandidate
+    ? "Ready for analysis"
+    : "Select a candidate to preview their resume";
 
-  // Removing a candidate clears their resume from the panel
-  const clearResume = () => {
-    if (selectedCandidate) removeCandidateById(selectedCandidate.id);
-  };
+  // "Clear" just deselects the candidate visually — deletion is via the X in the list
+  const clearResume = () => setSelectedCandidateId(null);
 
   const ratedQs = interviewQuestions.filter((q) => q.rating > 0);
   const avgRating = ratedQs.length > 0
@@ -217,7 +203,7 @@ export default function AnalyzerPage() {
     try {
       const fileToSend = selectedCandidate.resumeFile
         ? selectedCandidate.resumeFile
-        : new File([resume], "resume.txt", { type: "text/plain" });
+        : new File([resumeText], "resume.txt", { type: "text/plain" });
       const candidateName = selectedCandidate.name || "Candidate";
       const jobTitle = jd.split("\n").find((l) => l.trim())?.trim() ?? "";
       await downloadReport(result, interviewQuestions, fileToSend, candidateName, jobTitle);
@@ -239,7 +225,7 @@ export default function AnalyzerPage() {
       try {
         const fileToSend = c.resumeFile
           ? c.resumeFile
-          : new File([c.resume], "resume.txt", { type: "text/plain" });
+          : new File([c.resumeText ?? ""], "resume.txt", { type: "text/plain" });
         const candidateName = c.name || "Candidate";
         await downloadReport(c.result, c.interviewQuestions, fileToSend, candidateName, jobTitle);
         await new Promise((r) => setTimeout(r, 600)); // stagger downloads
@@ -430,25 +416,51 @@ export default function AnalyzerPage() {
               </div>
             </div>
 
+            <input type="file" ref={fileInputRef} onChange={handleUploadResume} accept=".pdf,.docx,.txt" className="hidden" />
+
             {/* Candidates panel */}
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden hover:shadow-md transition-all">
               <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <div className="p-1.5 bg-indigo-100 rounded-md text-indigo-600"><Users className="w-4 h-4" /></div>
                   <h2 className="text-xs font-bold uppercase tracking-widest text-slate-500">
-                    Candidates ({candidates.length})
+                    Candidate Library
                   </h2>
                 </div>
                 <button
                   onClick={() => fileInputRef.current?.click()}
-                  className="text-xs font-bold text-indigo-600 hover:text-indigo-700 flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 rounded-lg transition-all hover:bg-indigo-100"
+                  disabled={isExtractingResume}
+                  className="text-xs font-bold text-indigo-600 hover:text-indigo-700 flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 rounded-lg transition-all hover:bg-indigo-100 disabled:opacity-70"
                 >
-                  <Plus className="w-3.5 h-3.5" /> Add New
+                  {isExtractingResume
+                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    : <Plus className="w-3.5 h-3.5" />
+                  }
+                  {isExtractingResume ? "Adding..." : "Add Candidate"}
                 </button>
               </div>
-              <div className="p-2 max-h-48 overflow-y-auto">
+              <div className="px-4 pt-4 pb-2 border-b border-slate-100 bg-white">
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="rounded-2xl bg-slate-50 border border-slate-100 px-3 py-3">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Total</p>
+                    <p className="mt-1 text-2xl font-black text-slate-900">{candidates.length}</p>
+                  </div>
+                  <div className="rounded-2xl bg-slate-50 border border-slate-100 px-3 py-3">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Analyzed</p>
+                    <p className="mt-1 text-2xl font-black text-indigo-600">{analyzedCount}</p>
+                  </div>
+                  <div className="rounded-2xl bg-slate-50 border border-slate-100 px-3 py-3">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Pending</p>
+                    <p className="mt-1 text-2xl font-black text-amber-600">{Math.max(candidates.length - analyzedCount, 0)}</p>
+                  </div>
+                </div>
+                <p className="mt-3 text-xs text-slate-500">
+                  Upload resumes here to add new candidates. Select any candidate below to review their profile and analysis.
+                </p>
+              </div>
+              <div className="p-2 max-h-64 overflow-y-auto">
                 {candidates.length === 0 ? (
-                  <p className="text-center py-4 text-slate-400 text-xs italic">No candidates added yet.</p>
+                  <p className="text-center py-6 text-slate-400 text-xs italic">No candidates added yet. Use Add Candidate to upload the first resume.</p>
                 ) : (
                   <div className="space-y-1">
                     {candidates.map((c) => (
@@ -472,6 +484,9 @@ export default function AnalyzerPage() {
                           <div className="overflow-hidden">
                             <p className={cn("text-xs font-bold truncate", selectedCandidateId === c.id ? "text-indigo-900" : "text-slate-700")}>
                               {c.name}
+                            </p>
+                            <p className="text-[10px] text-slate-400 truncate">
+                              {c.fileName || (c.result ? "Analysis complete" : "Resume ready")}
                             </p>
                             {c.result && (
                               <div className="flex items-center gap-1 mt-0.5">
@@ -501,18 +516,11 @@ export default function AnalyzerPage() {
               <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <div className="p-1.5 bg-violet-100 rounded-md text-violet-600"><User className="w-4 h-4" /></div>
-                  <h2 className="text-xs font-bold uppercase tracking-widest text-slate-500">Candidate Profile</h2>
+                  <h2 className="text-xs font-bold uppercase tracking-widest text-slate-500">Selected Candidate</h2>
                 </div>
-                <div className="flex items-center gap-2">
-                  <input type="file" ref={fileInputRef} onChange={handleUploadResume} accept=".pdf,.docx,.txt" className="hidden" />
-                  <button
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={isExtractingResume}
-                    className="text-xs font-bold text-indigo-600 hover:text-indigo-700 flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 rounded-lg transition-all hover:bg-indigo-100 disabled:opacity-70"
-                  >
-                    {isExtractingResume ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
-                    {isExtractingResume ? "Processing..." : "Upload File"}
-                  </button>
+                <div className="text-right">
+                  <p className="text-xs font-bold text-slate-700 truncate max-w-[180px]">{selectedCandidateName}</p>
+                  <p className="text-[10px] text-slate-400">{selectedCandidateStatus}</p>
                 </div>
               </div>
               <div className="relative">
@@ -526,9 +534,9 @@ export default function AnalyzerPage() {
                   </div>
                 )}
                 <textarea
-                  value={selectedCandidate?.resumeText || ""}
+                  value={resumeText}
                   readOnly
-                  placeholder="Upload a resume to populate this field..."
+                  placeholder="Select a candidate to preview their resume here."
                   className="w-full h-64 p-5 focus:outline-none resize-none text-slate-700 leading-relaxed text-sm placeholder:text-slate-300 bg-slate-50/50"
                 />
               </div>
@@ -617,7 +625,7 @@ export default function AnalyzerPage() {
                     </div>
                     <h3 className="text-xl font-bold text-slate-900">Ready for Analysis</h3>
                     <p className="text-slate-500 mt-3 max-w-sm text-sm leading-relaxed">
-                      Add a candidate, provide their resume and the job description, then click Run Match Analysis.
+                      Add candidates from the candidate library, review the selected resume here, then run match analysis when the job description is ready.
                     </p>
                   </MotionDiv>
                 )}

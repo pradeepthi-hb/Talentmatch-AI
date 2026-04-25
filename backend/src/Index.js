@@ -8,6 +8,7 @@ import authRouter          from "./routes/auth.js";
 import analysesRouter      from "./routes/analyses.js";
 import candidatesRouter    from "./routes/candidates.js";
 import reportRouter        from "./routes/report.js";
+import analyzeInternalRouter from "./routes/analyzeInternal.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -19,7 +20,7 @@ if (missing.length) {
 }
 
 const app          = express();
-const PORT         = Number(process.env.PORT) || 3001;
+const PORT         = Number(process.env.PORT) || 3002;
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "http://localhost:5173";
 
 // ── Middleware ────────────────────────────────────────────────────────────────
@@ -44,6 +45,7 @@ app.use("/api/auth",     authRouter);
 app.use("/api/analyses", analysesRouter);
 app.use("/api/analyses/:analysisId/candidates", candidatesRouter);
 app.use("/api", reportRouter);
+app.use("/api", analyzeInternalRouter);
 
 app.get("/health", (_req, res) =>
   res.json({ status: "ok", timestamp: new Date().toISOString() })

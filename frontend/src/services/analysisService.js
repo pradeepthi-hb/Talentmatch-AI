@@ -1,6 +1,6 @@
 import { getToken } from "./authService.js";
 
-const API = import.meta.env.VITE_API_URL || "http://localhost:3001";
+const API = import.meta.env.VITE_API_URL || "http://localhost:3002";
 
 async function req(method, path, body, isFormData = false) {
   const token = getToken();

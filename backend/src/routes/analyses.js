@@ -1,4 +1,3 @@
-
 import { Router }   from "express";
 import { createHash } from "crypto";
 import pool          from "../db/tempconnection.js";
@@ -114,7 +113,7 @@ router.get("/:id", async (req, res) => {
     // Candidates
     const [candidates] = await pool.execute(
       `SELECT
-         c.id, c.name, c.file_name, c.mime_type, c.resume_path,
+         c.id, c.name, c.resume_text, c.file_name, c.mime_type, c.resume_path,
          c.created_at, c.updated_at,
          ar.result_json, ar.match_score, ar.is_outdated, ar.analyzed_at
        FROM candidates c
@@ -145,6 +144,7 @@ router.get("/:id", async (req, res) => {
     const enriched = candidates.map((c) => ({
       id:          c.id,
       name:        c.name,
+      resumeText:  c.resume_text || "",
       fileName:    c.file_name,
       mimeType:    c.mime_type,
       resumePath:  c.resume_path,
